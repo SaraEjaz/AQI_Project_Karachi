@@ -7,11 +7,14 @@ on:
     # Every day at midnight
     - cron: "0 0 * * *"
   workflow_dispatch:
-
+  
 jobs:
   run-pipelines:
     runs-on: ubuntu-latest
-
+    env:
+      AIR_POLLUTION_API: ${{ secrets.AIR_POLLUTION_API }}
+      CURRENT_WEATHER_API: ${{ secrets.CURRENT_WEATHER_API }}
+      MONGO_URI: ${{ secrets.MONGO_URI }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,9 +30,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Feature Pipeline (Hourly)
-        run: |
-          python feature_pipeline/fetch_features.py
+        run: python feature_pipeline/fetch_features.py
 
       - name: Run Training Pipeline (Daily)
-        run: |
-          python training_pipeline/train_model.py
+        run: python training_pipeline/train_model.py
