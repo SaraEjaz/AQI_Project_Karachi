@@ -1,92 +1,92 @@
-print("🚀 AQI PREDICTION SCRIPT STARTED")
+# -------------------------------------------------
+# predict_aqi.py - REAL AQI FORECAST
+# -------------------------------------------------
 
 import os
+import pickle
 import requests
 import pandas as pd
-import pickle
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
-# ---------------------------
-# Load environment variables
-# ---------------------------
+print("🚀 AQI PREDICTION SCRIPT STARTED")
+
+# -------------------------
+# AQI FORMULA (US EPA)
+# -------------------------
+def pm25_to_aqi(pm25):
+    breakpoints = [
+        (0.0, 12.0, 0, 50),
+        (12.1, 35.4, 51, 100),
+        (35.5, 55.4, 101, 150),
+        (55.5, 150.4, 151, 200),
+        (150.5, 250.4, 201, 300),
+        (250.5, 500.4, 301, 500)
+    ]
+
+    for c_low, c_high, aqi_low, aqi_high in breakpoints:
+        if c_low <= pm25 <= c_high:
+            return round(
+                ((aqi_high - aqi_low) / (c_high - c_low)) * (pm25 - c_low) + aqi_low
+            )
+    return None
+
+def aqi_category(aqi):
+    if aqi <= 50: return "Good"
+    if aqi <= 100: return "Moderate"
+    if aqi <= 150: return "Unhealthy for Sensitive Groups"
+    if aqi <= 200: return "Unhealthy"
+    if aqi <= 300: return "Very Unhealthy"
+    return "Hazardous"
+
+# -------------------------
+# Env + Mongo
+# -------------------------
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 
-LAT = 24.8607
-LON = 67.0011
-
-# ---------------------------
-# Connect to MongoDB
-# ---------------------------
 client = MongoClient(MONGO_URI)
 db = client["aqi_database"]
 
-features_col = db["features"]
-model_registry_col = db["model_registry"]
-predictions_col = db["predictions"]
+features_col = db["training_features"]
+model_col = db["model_registry"]
+pred_col = db["predictions"]
 
-print("✅ Connected to MongoDB")
-
-# ---------------------------
-# Load best trained model
-# ---------------------------
-model_doc = model_registry_col.find_one(sort=[("rmse", 1)])
-
-if not model_doc:
-    raise Exception("❌ No trained model found in MongoDB")
-
+# -------------------------
+# Load model
+# -------------------------
+model_doc = model_col.find_one()
 model = pickle.loads(model_doc["model_binary"])
-feature_columns = model_doc["features"]
+FEATURES = model_doc["features"]
 
 print(f"🏆 Loaded model: {model_doc['model_name']}")
 
-# ---------------------------
-# AQI category function
-# ---------------------------
-def aqi_category(aqi):
-    if aqi <= 1.5:
-        return "Good"
-    elif aqi <= 2.5:
-        return "Moderate"
-    elif aqi <= 3.5:
-        return "Poor"
-    else:
-        return "Very Poor"
+# -------------------------
+# Latest pollution
+# -------------------------
+latest = features_col.find_one(sort=[("timestamp", -1)])
+current_pm25 = latest["pm2_5"]
 
-# ---------------------------
-# Get latest pollution values
-# ---------------------------
-latest_pollution = features_col.find_one(sort=[("timestamp", -1)])
+current_aqi = pm25_to_aqi(current_pm25)
+print(f"🌫️ CURRENT AQI (Karachi): {current_aqi} ({aqi_category(current_aqi)})")
 
-pollutants = {
-    "pm2_5": latest_pollution["pm2_5"],
-    "pm10": latest_pollution["pm10"],
-    "no2": latest_pollution["no2"],
-    "so2": latest_pollution["so2"],
-    "co": latest_pollution["co"],
-    "o3": latest_pollution["o3"],
-    "nh3": latest_pollution.get("nh3", 0)
-}
+# -------------------------
+# Weather forecast
+# -------------------------
+LAT, LON = 24.8607, 67.0011
 
-print("🌫️ Using latest pollution values")
-
-# ---------------------------
-# Fetch 3-day weather forecast
-# ---------------------------
-weather_url = (
+url = (
     f"https://api.open-meteo.com/v1/forecast?"
     f"latitude={LAT}&longitude={LON}"
     f"&hourly=temperature_2m,relative_humidity_2m,pressure_msl,"
     f"windspeed_10m,winddirection_10m,precipitation"
-    f"&forecast_days=3"
-    f"&timezone=Asia/Karachi"
+    f"&forecast_days=3&timezone=Asia/Karachi"
 )
 
-weather_data = requests.get(weather_url).json()
-weather_df = pd.DataFrame(weather_data["hourly"])
+weather = requests.get(url).json()
+df = pd.DataFrame(weather["hourly"])
 
-weather_df.rename(columns={
+df.rename(columns={
     "temperature_2m": "temperature",
     "relative_humidity_2m": "humidity",
     "pressure_msl": "pressure",
@@ -95,50 +95,33 @@ weather_df.rename(columns={
     "precipitation": "precipitation"
 }, inplace=True)
 
-weather_df["timestamp"] = pd.to_datetime(weather_df["time"])
-weather_df.drop(columns=["time"], inplace=True)
+df["timestamp"] = pd.to_datetime(df["time"])
+df.drop(columns=["time"], inplace=True)
 
-print(f"🌤️ Weather rows fetched: {len(weather_df)}")
+df["hour"] = df["timestamp"].dt.hour
+df["day"] = df["timestamp"].dt.day
+df["month"] = df["timestamp"].dt.month
+df["day_of_week"] = df["timestamp"].dt.dayofweek
 
-# ---------------------------
-# Combine pollution + weather
-# ---------------------------
-for col, val in pollutants.items():
-    weather_df[col] = val
+# -------------------------
+# Predict PM2.5 → AQI
+# -------------------------
+df["predicted_pm25"] = model.predict(df[FEATURES])
+df["predicted_aqi"] = df["predicted_pm25"].apply(pm25_to_aqi)
+df["aqi_category"] = df["predicted_aqi"].apply(aqi_category)
 
-weather_df["hour"] = weather_df["timestamp"].dt.hour
-weather_df["day"] = weather_df["timestamp"].dt.day
-weather_df["month"] = weather_df["timestamp"].dt.month
-weather_df["day_of_week"] = weather_df["timestamp"].dt.dayofweek
+# -------------------------
+# Store
+# -------------------------
+pred_col.delete_many({})
 
-weather_df["aqi_change"] = 0  # future assumption
+pred_col.insert_many(
+    df[["timestamp", "predicted_pm25", "predicted_aqi", "aqi_category"]]
+    .to_dict("records")
+)
 
-# ---------------------------
-# Predict AQI
-# ---------------------------
-X_pred = weather_df[feature_columns]
-weather_df["predicted_aqi"] = model.predict(X_pred)
-weather_df["aqi_category"] = weather_df["predicted_aqi"].apply(aqi_category)
+print("📈 AQI FORECAST COMPLETE")
+print("\n🔮 NEXT 3 DAYS AQI (Hourly):")
+print(df[["timestamp", "predicted_aqi", "aqi_category"]])
 
-print("📈 AQI prediction completed")
-
-# ---------------------------
-# Store predictions
-# ---------------------------
-records = weather_df[
-    ["timestamp", "predicted_aqi", "aqi_category"]
-].to_dict("records")
-
-predictions_col.insert_many(records)
-
-print(f"✅ Stored {len(records)} AQI predictions in MongoDB")
-
-# ---------------------------
-# Display results
-# ---------------------------
-print("\n🔮 NEXT 3 DAYS AQI FORECAST FOR KARACHI (Hourly):")
-print(weather_df[
-    ["timestamp", "predicted_aqi", "aqi_category"]
-].head(24))
-
-print("\n🎉 AQI PREDICTION PIPELINE FINISHED SUCCESSFULLY")
+print("🎉 AQI PREDICTION PIPELINE FINISHED SUCCESSFULLY")
