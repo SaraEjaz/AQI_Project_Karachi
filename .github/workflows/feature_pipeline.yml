@@ -29,5 +29,5 @@ jobs:
           AIR_POLLUTION_API: ${{ secrets.AIR_POLLUTION_API }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
-          python fetch_historical_pollution.py
-          python fetch_historical_weather_and_merge.py
+          python feature_pipeline\fetch_features.py
+          python feature_pipeline\fetch_historical_weather_and_merge.py
