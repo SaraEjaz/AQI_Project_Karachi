@@ -28,10 +28,10 @@ jobs:
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
-          python train_model.py
+          python training_pipeline\train_model.py
 
       - name: Update Predictions
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
-          python predict_aqi.py
+          python prediction_pipeline\predict_aqi.py

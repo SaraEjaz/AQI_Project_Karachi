@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "axios": "^1.13.4",
+    "fastapi": "^0.0.8",
+    "framer-motion": "^12.29.2",
+    "leaflet": "^1.9.4",
+    "react-leaflet": "^5.0.0",
+    "recharts": "^3.7.0"
+  }
+}
