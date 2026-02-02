@@ -1,5 +1,5 @@
 # -------------------------------------------------
-# train_model.py - CORRECT AQI LOGIC
+# train_model.py - AQI PREDICTION PIPELINE
 # -------------------------------------------------
 
 import os
@@ -11,9 +11,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import Ridge
 
 # -------------------------
@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logging.info("TRAINING SCRIPT STARTED")
 
 # -------------------------
-# Env + Mongo
+# Env + MongoDB
 # -------------------------
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
@@ -43,34 +43,32 @@ if df.empty:
 logging.info(f"Training data shape: {df.shape}")
 
 # -------------------------
-# FEATURES & TARGET
+# Features & Target
 # -------------------------
 FEATURES = [
     "temperature", "humidity", "pressure",
     "windspeed", "winddirection", "precipitation",
     "hour", "day", "month", "day_of_week"
 ]
-
-TARGET = "pm2_5"   # ✅ CORRECT TARGET
+TARGET = "pm2_5"
 
 X = df[FEATURES]
 y = df[TARGET]
 
 # -------------------------
-# Split
+# Train/Test Split
 # -------------------------
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, shuffle=False
 )
 
 # -------------------------
-# Models
+# Models to train
 # -------------------------
 models = {
+    "RidgeRegression": Ridge(alpha=1.0),
     "RandomForest": RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1),
-    "GradientBoosting": GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, random_state=42),
-    "ExtraTrees": ExtraTreesRegressor(n_estimators=200, random_state=42, n_jobs=-1),
-    "RidgeRegression": Ridge(alpha=1.0)
+    "GradientBoosting": GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, random_state=42)
 }
 
 results = []
@@ -84,26 +82,30 @@ for name, model in models.items():
     mae = mean_absolute_error(y_test, preds)
     r2 = r2_score(y_test, preds)
 
+    # Optional: cross-validation score to check overfitting
+    cv_r2 = cross_val_score(model, X_train, y_train, cv=5, scoring='r2').mean()
+
     results.append({
         "model_name": name,
         "model": model,
         "rmse": rmse,
         "mae": mae,
-        "r2": r2
+        "r2": r2,
+        "cv_r2": cv_r2
     })
 
-    logging.info(f"{name} → RMSE: {rmse:.2f} | R²: {r2:.2f}")
+    logging.info(f"{name} → RMSE: {rmse:.2f} | R²: {r2:.2f} | CV R²: {cv_r2:.2f}")
 
 # -------------------------
-# Best model
+# Select best model based on RMSE
 # -------------------------
 best = min(results, key=lambda x: x["rmse"])
 logging.info(f"BEST MODEL: {best['model_name']}")
 
 # -------------------------
-# Save model
+# Save best model to MongoDB
 # -------------------------
-model_col.delete_many({})  # keep only best model
+model_col.delete_many({})  # keep only the latest model
 
 model_col.insert_one({
     "model_name": best["model_name"],
@@ -113,6 +115,7 @@ model_col.insert_one({
     "rmse": best["rmse"],
     "mae": best["mae"],
     "r2": best["r2"],
+    "cv_r2": best["cv_r2"],
     "model_binary": pickle.dumps(best["model"])
 })
 

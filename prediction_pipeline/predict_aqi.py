@@ -6,6 +6,7 @@ import os
 import pickle
 import requests
 import pandas as pd
+from datetime import datetime
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
@@ -23,7 +24,6 @@ def pm25_to_aqi(pm25):
         (150.5, 250.4, 201, 300),
         (250.5, 500.4, 301, 500)
     ]
-
     for c_low, c_high, aqi_low, aqi_high in breakpoints:
         if c_low <= pm25 <= c_high:
             return round(
@@ -48,12 +48,13 @@ MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI)
 db = client["aqi_database"]
 
-features_col = db["training_features"]
-model_col = db["model_registry"]
-pred_col = db["predictions"]
+features_col = db["training_features"]    # Historical training data
+model_col = db["model_registry"]          # Stored ML model
+pred_col = db["predictions"]              # AQI forecast
+weather_col = db["weather"]               # Current weather info for dashboard
 
 # -------------------------
-# Load model
+# Load best model
 # -------------------------
 model_doc = model_col.find_one()
 model = pickle.loads(model_doc["model_binary"])
@@ -62,25 +63,15 @@ FEATURES = model_doc["features"]
 print(f"🏆 Loaded model: {model_doc['model_name']}")
 
 # -------------------------
-# Latest pollution
-# -------------------------
-latest = features_col.find_one(sort=[("timestamp", -1)])
-current_pm25 = latest["pm2_5"]
-
-current_aqi = pm25_to_aqi(current_pm25)
-print(f"🌫️ CURRENT AQI (Karachi): {current_aqi} ({aqi_category(current_aqi)})")
-
-# -------------------------
-# Weather forecast
+# Fetch latest weather forecast (4 days)
 # -------------------------
 LAT, LON = 24.8607, 67.0011
-
 url = (
     f"https://api.open-meteo.com/v1/forecast?"
     f"latitude={LAT}&longitude={LON}"
     f"&hourly=temperature_2m,relative_humidity_2m,pressure_msl,"
     f"windspeed_10m,winddirection_10m,precipitation"
-    f"&forecast_days=3&timezone=Asia/Karachi"
+    f"&forecast_days=4&timezone=Asia/Karachi"
 )
 
 weather = requests.get(url).json()
@@ -98,6 +89,7 @@ df.rename(columns={
 df["timestamp"] = pd.to_datetime(df["time"])
 df.drop(columns=["time"], inplace=True)
 
+# Add features for model
 df["hour"] = df["timestamp"].dt.hour
 df["day"] = df["timestamp"].dt.day
 df["month"] = df["timestamp"].dt.month
@@ -111,17 +103,32 @@ df["predicted_aqi"] = df["predicted_pm25"].apply(pm25_to_aqi)
 df["aqi_category"] = df["predicted_aqi"].apply(aqi_category)
 
 # -------------------------
-# Store
+# Store AQI forecast in MongoDB
 # -------------------------
-pred_col.delete_many({})
-
+pred_col.delete_many({})  # Clear old forecast
 pred_col.insert_many(
-    df[["timestamp", "predicted_pm25", "predicted_aqi", "aqi_category"]]
-    .to_dict("records")
+    df[["timestamp", "predicted_pm25", "predicted_aqi", "aqi_category"]].to_dict("records")
 )
 
+# -------------------------
+# Store current weather for dashboard
+# -------------------------
+weather_col.delete_many({})  # keep only latest
+current_weather = df.iloc[0]
+
+weather_col.insert_one({
+    "timestamp": pd.Timestamp(current_weather["timestamp"]).to_pydatetime(),  # ensure datetime
+    "temp_c": float(current_weather["temperature"]),
+    "humidity": float(current_weather["humidity"]),
+    "pressure": float(current_weather["pressure"]),
+    "windspeed": float(current_weather["windspeed"]),
+    "winddirection": float(current_weather["winddirection"]),
+    "precipitation": float(current_weather["precipitation"])
+})
+
+
 print("📈 AQI FORECAST COMPLETE")
-print("\n🔮 NEXT 3 DAYS AQI (Hourly):")
-print(df[["timestamp", "predicted_aqi", "aqi_category"]])
+print("\n🔮 NEXT 4 DAYS AQI (Hourly):")
+print(df[["timestamp", "predicted_aqi", "aqi_category"]].head(24*4))  # show first 24h of each day
 
 print("🎉 AQI PREDICTION PIPELINE FINISHED SUCCESSFULLY")

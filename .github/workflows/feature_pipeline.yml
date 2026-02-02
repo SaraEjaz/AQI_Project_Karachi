@@ -1,0 +1,33 @@
+name: Feature Pipeline (Hourly)
+
+# Trigger: every hour
+on:
+  schedule:
+    - cron: "0 * * * *"  # every hour UTC
+  workflow_dispatch:       # optional: manual trigger
+
+jobs:
+  fetch-features:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Feature Scripts
+        env:
+          AIR_POLLUTION_API: ${{ secrets.AIR_POLLUTION_API }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          python fetch_historical_pollution.py
+          python fetch_historical_weather_and_merge.py
