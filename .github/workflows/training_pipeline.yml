@@ -34,4 +34,4 @@ jobs:
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
-          python prediction_pipeline\predict_aqi.py
+          python ./prediction_pipeline/predict_aqi.py
