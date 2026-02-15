@@ -1,5 +1,5 @@
 # -------------------------------------------------
-# train_model.py - AQI PREDICTION PIPELINE
+# train_model.py - ADVANCED AQI TRAINING PIPELINE
 # -------------------------------------------------
 
 import os
@@ -15,12 +15,13 @@ from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import Ridge
+from xgboost import XGBRegressor   # ✅ NEW
 
 # -------------------------
 # Logging
 # -------------------------
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-logging.info("TRAINING SCRIPT STARTED")
+logging.info("🚀 TRAINING SCRIPT STARTED")
 
 # -------------------------
 # Env + MongoDB
@@ -38,7 +39,7 @@ model_col = db["model_registry"]
 # -------------------------
 df = pd.DataFrame(list(data_col.find({}, {"_id": 0})))
 if df.empty:
-    raise Exception("No training data found")
+    raise Exception("❌ No training data found")
 
 logging.info(f"Training data shape: {df.shape}")
 
@@ -56,24 +57,47 @@ X = df[FEATURES]
 y = df[TARGET]
 
 # -------------------------
-# Train/Test Split
+# Train/Test Split (Time-Series Safe)
 # -------------------------
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, shuffle=False
 )
 
 # -------------------------
-# Models to train
+# Models to Train
 # -------------------------
 models = {
     "RidgeRegression": Ridge(alpha=1.0),
-    "RandomForest": RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1),
-    "GradientBoosting": GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, random_state=42)
+
+    "RandomForest": RandomForestRegressor(
+        n_estimators=300,
+        max_depth=15,
+        random_state=42,
+        n_jobs=-1
+    ),
+
+    "GradientBoosting": GradientBoostingRegressor(
+        n_estimators=300,
+        learning_rate=0.05,
+        random_state=42
+    ),
+
+    # ✅ NEW — XGBoost (STRONG MODEL)
+    "XGBoost": XGBRegressor(
+        n_estimators=400,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        n_jobs=-1
+    )
 }
 
 results = []
 
-logging.info("Training models...")
+logging.info("\n📊 Training Models...\n")
+
 for name, model in models.items():
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
@@ -81,9 +105,7 @@ for name, model in models.items():
     rmse = mean_squared_error(y_test, preds) ** 0.5
     mae = mean_absolute_error(y_test, preds)
     r2 = r2_score(y_test, preds)
-
-    # Optional: cross-validation score to check overfitting
-    cv_r2 = cross_val_score(model, X_train, y_train, cv=5, scoring='r2').mean()
+    cv_r2 = cross_val_score(model, X_train, y_train, cv=5, scoring="r2").mean()
 
     results.append({
         "model_name": name,
@@ -94,29 +116,43 @@ for name, model in models.items():
         "cv_r2": cv_r2
     })
 
-    logging.info(f"{name} → RMSE: {rmse:.2f} | R²: {r2:.2f} | CV R²: {cv_r2:.2f}")
+    logging.info(
+        f"{name:<18} | RMSE: {rmse:8.3f} | MAE: {mae:8.3f} | R²: {r2:6.3f} | CV R²: {cv_r2:6.3f}"
+    )
 
 # -------------------------
-# Select best model based on RMSE
+# Sort Models by RMSE
 # -------------------------
-best = min(results, key=lambda x: x["rmse"])
-logging.info(f"BEST MODEL: {best['model_name']}")
+results_sorted = sorted(results, key=lambda x: x["rmse"])
+
+best_model = results_sorted[0]
+second_best = results_sorted[1]
+
+logging.info("\n🏆 MODEL RANKING:")
+for i, res in enumerate(results_sorted):
+    logging.info(f"{i+1}. {res['model_name']} (RMSE: {res['rmse']:.3f})")
+
+logging.info(f"\n🥇 BEST MODEL: {best_model['model_name']}")
+logging.info(f"🥈 SECOND BEST: {second_best['model_name']}")
 
 # -------------------------
-# Save best model to MongoDB
+# Store TOP 2 models in MongoDB
 # -------------------------
-model_col.delete_many({})  # keep only the latest model
+model_col.delete_many({})
 
-model_col.insert_one({
-    "model_name": best["model_name"],
-    "created_at": datetime.utcnow(),
-    "target": TARGET,
-    "features": FEATURES,
-    "rmse": best["rmse"],
-    "mae": best["mae"],
-    "r2": best["r2"],
-    "cv_r2": best["cv_r2"],
-    "model_binary": pickle.dumps(best["model"])
-})
+for rank, model_data in enumerate([best_model, second_best], start=1):
+    model_col.insert_one({
+        "model_name": model_data["model_name"],
+        "rank": rank,
+        "created_at": datetime.utcnow(),
+        "target": TARGET,
+        "features": FEATURES,
+        "rmse": model_data["rmse"],
+        "mae": model_data["mae"],
+        "r2": model_data["r2"],
+        "cv_r2": model_data["cv_r2"],
+        "model_binary": pickle.dumps(model_data["model"])
+    })
 
-logging.info("MODEL STORED SUCCESSFULLY")
+logging.info("\n✅ TOP 2 MODELS STORED SUCCESSFULLY")
+logging.info("🎯 TRAINING PIPELINE FINISHED")

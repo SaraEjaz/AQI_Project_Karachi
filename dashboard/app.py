@@ -1,13 +1,78 @@
-import os
+import os 
 import pandas as pd
+import streamlit as st
 from pymongo import MongoClient
 from dotenv import load_dotenv
-import dash
-from dash import dcc, html
-from dash.dependencies import Input, Output
-import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date
+
+# -----------------------------
+# PAGE CONFIG (Dark Theme)
+# -----------------------------
+st.set_page_config(
+    page_title="🌟 Karachi AQI Dashboard",
+    layout="wide"
+)
+
+
+
+st.markdown("""
+    <style>
+    .stApp {
+        background-color:#0A0A0A;
+        color: white;
+        font-family: 'Trebuchet MS', sans-serif;
+    }
+
+    /* Today Card */
+    .metric-card {
+        background: linear-gradient(135deg, #FF3B3B, #FF0000); /* bright red */
+        padding: 20px;
+        border-radius: 15px;
+        text-align: center;
+        color: white;
+        font-weight: bold;
+        transition: transform 0.2s, box-shadow 0.3s;
+        border: 1.5px solid #FF0000;
+    }
+    .metric-card:hover {
+        transform: scale(1.05);
+        box-shadow: 0 0 20px #FF0000; /* red glow on hover */
+    }
+
+    /* Next 3 Day Prediction Cards */
+    .card {
+        padding: 20px;
+        border-radius: 15px;
+        background: linear-gradient(135deg, #00FFFF, #007BFF); /* cyan blue gradient */
+        color: white;
+        text-align: center;
+        font-weight: bold;
+        transition: transform 0.2s, box-shadow 0.3s;
+        border: 1.5px solid #00FFFF;
+    }
+    .card:hover {
+        transform: scale(1.05);
+        box-shadow: 0 0 3px #00FFFF; /* cyan glow on hover */
+    }
+
+    h1 {
+        font-size: 3em;
+    }
+
+    .tips {
+    background: rgba(255, 165, 0, 0.5); /* orange with 30% opacity */
+    padding: 30px;
+    border-radius: 6px;
+    color: white; /* text contrasts with orange */
+    border: 1.5px solid #FFA500; /* neon-style orange border */
+    box-shadow: 0 0 2px #FFA500; /* glowing neon effect */
+    font-weight: bold;
+    transition: transform 0.2s, box-shadow 0.3s;
+}
+</style>
+
+""", unsafe_allow_html=True)
 
 # -----------------------------
 # LOAD ENV & DB
@@ -19,7 +84,8 @@ client = MongoClient(MONGO_URI)
 db = client["aqi_database"]
 pred_col = db["predictions"]
 pollution_col = db["historical_pollutants"]
-weather_col = db.get_collection("weather")
+weather_col = db["weather"]
+model_col = db["model_registry"]
 
 # -----------------------------
 # HELPER FUNCTIONS
@@ -32,10 +98,7 @@ def load_predictions():
     return df.sort_values("timestamp")
 
 def load_latest_weather():
-    latest = weather_col.find_one({}, {"_id":0}, sort=[("timestamp",-1)])
-    if not latest:
-        return None
-    return latest
+    return weather_col.find_one({}, {"_id":0}, sort=[("timestamp",-1)])
 
 def aqi_label(aqi):
     if aqi <= 50: return "Good 😄"
@@ -45,283 +108,274 @@ def aqi_label(aqi):
     if aqi <= 300: return "Very Unhealthy 😨"
     return "Hazardous 🚨"
 
-def gradient_card_style(start="#1e3c72", end="#2a5298", width="25%", height="120px", **kwargs):
-    style = {
-        "background": f"linear-gradient(135deg, {start}, {end}, 0.8)",  # slightly transparent
-        "padding": "25px",
-        "border-radius": "12px",
-        "box-shadow": "0 0 12px rgba(255,255,255,0.2)",
-        "border": "1px solid rgba(255,255,255,0.2)",
-        "color": "white",
-        "text-align": "left",
-        "width": width,
-        "height": height,
-        "font-size": "1rem",
-        "display":"flex",
-        "flex-direction":"column",
-        "justify-content":"center",
-        "align-items":"flex-start",
-        "backdrop-filter": "blur(6px)",   # adds slight blur behind card
-        "background-color": "rgba(30,60,114,0.6)"  # fallback transparent background
-    }
-    style.update(kwargs)
-    return style
-
+# -----------------------------
+# TITLE (Top-left)
+# -----------------------------
+st.markdown("<h1 style='text-align:left;color:white;'>🌤️ Karachi AQI Dashboard</h1>", unsafe_allow_html=True)
 
 # -----------------------------
-# DASH APP
+# LOAD DATA
 # -----------------------------
-app = dash.Dash(__name__)
-app.title = "Karachi AQI Dashboard"
+df = load_predictions()
+if df is None:
+    st.warning("⚠️ No Prediction Data Found")
+    st.stop()
 
-# -----------------------------
-# GLOBAL DARK THEME
-# -----------------------------
-app.index_string = """
-<!DOCTYPE html>
-<html>
-    <head>
-        {%metas%}
-        <title>{%title%}</title>
-        {%favicon%}
-        {%css%}
-        <style>
-            body {background-color:#0F172A; color:#E5E7EB; font-family: Arial,sans-serif;}
-            h1,h2,h3,h4 {color:#F8FAFC; margin:0;}
-            .cards-row {
-                display:flex;
-                justify-content:space-between;
-                margin-bottom:3px;
-                gap:10px;
-                flex-wrap: nowrap;
-            }
-            .chart-box {
-                background:#111827;
-                padding:10px;
-                border-radius:12px;
-                box-shadow:0 0 12px rgba(255,255,255,0.05);
-                border:1px solid rgba(255,255,255,0.2);
-            }
-        </style>
-    </head>
-    <body style="margin:0; padding:0; overflow-y: auto; height: 100vh;">
-
-    <!-- Background Video -->
-    <video autoplay muted loop id="bg-video" style="
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        z-index: -1;
-    ">
-        <source src="/assets/background.mp4" type="video/mp4">
-        Your browser does not support the video tag.
-    </video>
-
-    <!-- Dashboard content -->
-    <div id="dash-container" style="position: relative; z-index: 1;">
-        {%app_entry%}
-        {%config%}
-        {%scripts%}
-        {%renderer%}
-    </div>
-</body>
-
-
-</html>
-"""
+latest_aqi = int(df.iloc[-1]["predicted_aqi"])
+category = aqi_label(latest_aqi)
+today = date.today()
 
 # -----------------------------
-# LAYOUT
+# TOP AQI CARDS
 # -----------------------------
-app.layout = html.Div([
-    html.Div([
-        html.H1("🌤️ Karachi AQI Forecast", style={"text-align":"center", "margin-bottom":"10px"}),
+st.markdown("### 📊 AQI Overview")
+col1, col2, col3, col4 = st.columns(4)
 
-        dcc.Interval(id="refresh", interval=60*1000, n_intervals=0),
+df["date"] = df["timestamp"].dt.date
+daily = df.groupby("date")["predicted_aqi"].mean().reset_index()
+next_days = daily[daily["date"] > today].head(3)
 
-        html.Div(id="iqair-cards", className="cards-row"),
-        html.Div(id="top-cards", className="cards-row"),
+with col1:
+    st.markdown(f"<div class='metric-card'><h3>Today</h3><h2>{latest_aqi}</h2><p>{category}</p></div>", unsafe_allow_html=True)
 
-        html.Div([
-            html.Div(dcc.Graph(id="aqi-line"), className="chart-box", style={"width":"60%", "height":"250px"}),
-            html.Div(dcc.Graph(id="karachi-map"), className="chart-box", style={"width":"38%", "height":"250px"}),
-        ], className="cards-row"),
-
-        html.Div([
-    html.Div(
-        dcc.Graph(id="pollutant-trends"),
-        className="chart-box",
-        style={"width":"60%", "height":"250px"}  # 3/5 part
-    ),
-    html.Div(
-        id="info-card",
-        className="chart-box",
-        style={
-            "width":"40%",   # 2/5 part
-            "height":"266.5px",
-            "padding":"0",
-            "overflow":"hidden"
-        }
-    ),
-], className="cards-row"),
-
-    ], style={"padding":"10px"})
-])
+for i in range(3):
+    if i < len(next_days):
+        val = int(next_days.iloc[i]["predicted_aqi"])
+        cat = aqi_label(val)
+        with [col2, col3, col4][i]:
+            st.markdown(f"<div class='card'><h4>{next_days.iloc[i]['date']}</h4><h2>{val}</h2><p>{cat}</p></div>", unsafe_allow_html=True)
 
 # -----------------------------
-# CALLBACKS
+# WEATHER INFO
 # -----------------------------
-@app.callback(
-    [
-        Output("top-cards","children"),
-        Output("karachi-map","figure"),
-        Output("aqi-line","figure"),
-        Output("iqair-cards","children"),
-        Output("pollutant-trends","figure"),
-        Output("info-card","children"),
-    ],
-    Input("refresh","n_intervals")
-)
-def update_dashboard(_):
-    df = load_predictions()
-    if df is None:
-        return ["No Data"]*6
+st.markdown("### 🌦️ Weather Conditions")
+weather = load_latest_weather()
+if weather:
+    w1, w2, w3 = st.columns(3)
+    w1.metric("🌡️ Temp (°C)", weather.get("temp_c", "-"))
+    w2.metric("💧 Humidity (%)", weather.get("humidity", "-"))
+    w3.metric("🔴 Pressure (hPa)", weather.get("pressure", "-"))
+else:
+    st.info("No Weather Data Available")
 
-    today = date.today()
-    latest_aqi = int(df.iloc[0]["predicted_aqi"])
-    category = aqi_label(latest_aqi)
-    latest_weather = load_latest_weather()
+# -----------------------------
+# AQI BAR GRAPH + MAP
+# -----------------------------
+st.markdown("### 📊 AQI Forecast & Map")
+col_left, col_right = st.columns([2,1])
 
-    cards = []
-
-    df["date"] = df["timestamp"].dt.date
-    daily = df.groupby("date")["predicted_aqi"].mean().reset_index()
-
-    iqair_cards = []
-    iqair_cards.append(
-        html.Div([html.H4("Today 📅"), html.H2(f"{latest_aqi}"), html.P(category)],
-                 style=gradient_card_style("#11998e","#38ef7d"))
-    )
-
-    next_days = daily[daily["date"] > today].head(3)
-
-    for i in range(3):
-        if i < len(next_days):
-            row = next_days.iloc[i]
-            val = int(row["predicted_aqi"])
-            cat = aqi_label(val)
-            iqair_cards.append(
-                html.Div([html.H4(str(row["date"])), html.H2(f"{val}"), html.P(cat)],
-                         style=gradient_card_style("#6a11cb","#2575fc"))
-            )
-        else:
-            iqair_cards.append(
-                html.Div([html.H4("N/A"), html.H2("-"), html.P("-")],
-                         style=gradient_card_style("#444","#777"))
-            )
-
-    line_fig = px.line(df, x="timestamp", y="predicted_aqi", markers=True, template="plotly_dark",
-                       title="Hourly AQI Forecast")
-    line_fig.update_layout(margin=dict(t=20,b=20,l=20,r=20), height=250)
-
-    map_fig = px.scatter_mapbox(
-        pd.DataFrame([{"lat":24.8607,"lon":67.0011,"AQI":latest_aqi}]),
-        lat="lat", lon="lon", size="AQI", color="AQI",
-        size_max=15, zoom=10, mapbox_style="carto-darkmatter",
-        hover_name="AQI"
-    )
-    map_fig.update_layout(margin=dict(t=20,b=20,l=20,r=20), height=250)
-
-    pol_trends = pd.DataFrame(list(pollution_col.find({}, {"_id":0})))
-    if not pol_trends.empty:
-        pol_trends["timestamp"] = pd.to_datetime(pol_trends["timestamp"])
-        pol_fig = px.line(pol_trends, x="timestamp",
-                          y=["pm2_5","pm10","no2","so2","co","o3","nh3"],
-                          template="plotly_dark",
-                          title="Pollutant Trends Over Time")
-        pol_fig.update_layout(margin=dict(t=20,b=20,l=20,r=20), height=250)
-    else:
-        pol_fig = go.Figure()
-        pol_fig.update_layout(template="plotly_dark", title="Pollutant Trends - No Data",
-                              paper_bgcolor="#0F172A", plot_bgcolor="#0F172A", height=250)
-
-    info_children = []
-    if latest_weather:
-        if "temp_c" in latest_weather:
-            info_children.append(html.H4(f"🌡️ Temp: {latest_weather['temp_c']} °C"))
-        if "humidity" in latest_weather:
-            info_children.append(html.H4(f"💧 Humidity: {latest_weather['humidity']} %"))
-        if "wind_kph" in latest_weather:
-            info_children.append(html.H4(f"💨 Wind: {latest_weather['wind_kph']} kph"))
-        if "pressure" in latest_weather:
-            info_children.append(html.H4(f"🧭 Pressure: {latest_weather['pressure']} hPa"))
-    else:
-        info_children.append(html.H4("No Data"))
-
-    info_children = html.Div(
-    children=[
-        # Background Image (full card)
-        html.Img(
-            src="/assets/Info.jpg",
-            style={
-                "position": "absolute",
-                "top": "10",
-                "left": "0",
-                "width": "100%",
-                "height": "130%",
-                "object-fit": "cover",
-                "border-radius": "12px",
-                "zIndex": "0"
-            }
+with col_left:
+    fig_bar_aqi = go.Figure()
+    fig_bar_aqi.add_trace(go.Bar(
+        x=df["timestamp"],
+        y=df["predicted_aqi"],
+        marker=dict(
+            color=df["predicted_aqi"],
+            colorscale="Turbo",
+            showscale=True
         ),
+        name="AQI"
+    ))
+    fig_bar_aqi.update_layout(
+        template="plotly_dark",
+        height=350,
+        title="AQI Forecast (Bar View)",
+        xaxis_title="Time",
+        yaxis_title="Predicted AQI",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(t=50, b=20, l=20, r=20)
+    )
+    st.plotly_chart(fig_bar_aqi, use_container_width=True)
 
-        # EVEN DARK LAYER (FULL CARD)
-        html.Div(
-            style={
-                "position": "absolute",
-                "top": "0",
-                "left": "0",
-                "width": "100%",
-                "height": "100%",
-                "background": "rgba(0,0,0,0.45)",
-                "zIndex": "1",
-                "border-radius": "12px"
-            }
-        ),
+with col_right:
+    map_fig = go.Figure(go.Scattermapbox(
+        lat=[24.8607],
+        lon=[67.0011],
+        mode='markers+text',
+        marker=dict(size=20, color="red"),
+        text=[f"Karachi - AQI: {latest_aqi} 🌆"],
+        textposition="top right"
+    ))
+    map_fig.update_layout(
+        mapbox_style="open-street-map",
+        mapbox_zoom=10,
+        mapbox_center={"lat":24.8607, "lon":67.0011},
+        margin=dict(l=0,r=0,t=0,b=0),
+        height=350
+    )
+    st.plotly_chart(map_fig, use_container_width=True)
 
-        # TEXT CONTENT ON TOP
-        html.Div(
-            info_children,
-            style={
-                "position": "relative",
-                "zIndex": "2",
-                "color": "white",
-                "padding": "18px",
-                "fontSize": "1rem",
-                "textAlign": "left",
-                "display": "flex",
-                "flexDirection": "column",
-                "justifyContent": "center"
-            }
+# -----------------------------
+# POLLUTANT PIE + AQI SPEEDOMETER
+# -----------------------------
+st.markdown("### 🏭 Pollutant Concentration & AQI Gauge")
+pol_df = pd.DataFrame(list(pollution_col.find({}, {"_id":0})))
+
+if not pol_df.empty:
+    pol_df["timestamp"] = pd.to_datetime(pol_df["timestamp"])
+    latest_pollutants = pol_df.iloc[-1][["pm2_5","pm10","no2","so2","co","o3","nh3"]].fillna(0)
+    labels = [col.upper() for col in latest_pollutants.index]
+    values = latest_pollutants.values
+
+    col1, col2 = st.columns(2)
+
+    # PIE CHART
+    with col1:
+        fig_pie = go.Figure(go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.4,
+            marker=dict(line=dict(color='white', width=2))
+        ))
+        fig_pie.update_layout(
+            template="plotly_dark",
+            height=400,
+            title="Pollutant Concentration 🏭",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(t=50, b=20, l=20, r=20),
+            showlegend=True
         )
-    ],
-    style={
-        "position": "relative",
-        "width": "100%",
-        "height": "250px",
-        "overflow": "hidden",
-        "border-radius": "12px"
-    }
-)
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-
-    return cards, map_fig, line_fig, iqair_cards, pol_fig, info_children
+    # SPEEDOMETER GAUGE
+    with col2:
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=latest_aqi,
+            number={'suffix': " AQI"},
+            title={'text': "Current AQI 🌡️"},
+            gauge={
+                'axis': {'range': [0, 500]},
+                'bar': {'color': "orange"},
+                'steps': [
+                    {'range': [0,50], 'color':'green'},
+                    {'range':[51,100], 'color':'yellow'},
+                    {'range':[101,150], 'color':'orange'},
+                    {'range':[151,200], 'color':'red'},
+                    {'range':[201,300], 'color':'purple'},
+                    {'range':[301,500], 'color':'maroon'},
+                ],
+                'threshold': {
+                    'line': {'color': "white", 'width': 4},
+                    'thickness': 0.75,
+                    'value': latest_aqi
+                }
+            }
+        ))
+        fig_gauge.update_layout(
+            template="plotly_dark",
+            height=400,
+            paper_bgcolor='rgba(0,0,0,0)',
+            margin=dict(t=50, b=20, l=20, r=20)
+        )
+        st.plotly_chart(fig_gauge, use_container_width=True)
 
 # -----------------------------
-# RUN APP
+# TOP MODEL COMPARISON (Slim Bars + Pattern for Best Model)
 # -----------------------------
-if __name__ == "__main__":
-    app.run(debug=True)
+st.markdown("### 🤖 Top Model Comparison")
+
+models_df = pd.DataFrame(list(model_col.find({"rank":{"$lte":2}},{"_id":0})))
+if not models_df.empty:
+    models_df = models_df.sort_values("rank")
+    metrics = ["rmse","mae","r2"]
+    best_model_name = models_df.iloc[0]["model_name"]
+    
+    col1, col2, col3 = st.columns(3)
+    
+    # RMSE chart
+    with col1:
+        fig_rmse = go.Figure()
+        for i, row in models_df.iterrows():
+            fig_rmse.add_trace(go.Bar(
+                x=[row["model_name"]],
+                y=[row["rmse"]],
+                name=row["model_name"],
+                marker=dict(
+                    color="#14E2E9" if row["model_name"] != best_model_name else "#E7393F",
+                    pattern_shape="\\"
+                ),
+                width=0.3  # slim bar
+            ))
+        fig_rmse.update_layout(
+            template="plotly_dark",
+            title="RMSE",
+            height=350,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(t=50, b=20, l=20, r=20),
+            showlegend=False
+        )
+        st.plotly_chart(fig_rmse, use_container_width=True)
+    
+    # MAE chart
+    with col2:
+        fig_mae = go.Figure()
+        for i, row in models_df.iterrows():
+            fig_mae.add_trace(go.Bar(
+                x=[row["model_name"]],
+                y=[row["mae"]],
+                name=row["model_name"],
+                marker=dict(
+                    color="#14E2E9" if row["model_name"] != best_model_name else "#E7393F",
+                    pattern_shape="\\"
+                ),
+                width=0.3
+            ))
+        fig_mae.update_layout(
+            template="plotly_dark",
+            title="MAE",
+            height=350,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(t=50, b=20, l=20, r=20),
+            showlegend=False
+        )
+        st.plotly_chart(fig_mae, use_container_width=True)
+    
+    # R² chart
+    with col3:
+        fig_r2 = go.Figure()
+        for i, row in models_df.iterrows():
+            fig_r2.add_trace(go.Bar(
+                x=[row["model_name"]],
+                y=[row["r2"]],
+                name=row["model_name"],
+                marker=dict(
+                    color="#14E2E9" if row["model_name"] != best_model_name else "#E7393F",
+                    pattern_shape="\\"
+                ),
+                width=0.3
+            ))
+        fig_r2.update_layout(
+            template="plotly_dark",
+            title="R² Score",
+            height=350,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(t=50, b=20, l=20, r=20),
+            showlegend=False
+        )
+        st.plotly_chart(fig_r2, use_container_width=True)
+    
+    best = models_df.iloc[0]
+    st.success(f"🏆 Best Model: {best['model_name']} | RMSE: {best['rmse']:.2f} | MAE: {best['mae']:.2f} | R²: {best['r2']:.2f}")
+
+
+
+# -----------------------------
+# AQI TIPS
+# -----------------------------
+st.markdown("### 🛡️ AQI Protection Tips")
+st.markdown("""
+<div class="tips">
+<ul>
+<li>😷 Wear a mask on high AQI days</li>
+<li>🚴 Avoid outdoor activities during peak pollution</li>
+<li>🏠 Use air purifiers indoors</li>
+<li>💧 Stay hydrated & eat antioxidant-rich foods</li>
+</ul>
+</div>
+""", unsafe_allow_html=True)

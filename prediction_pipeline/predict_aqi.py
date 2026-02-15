@@ -1,19 +1,19 @@
 # -------------------------------------------------
-# predict_aqi.py - REAL AQI FORECAST
+# predict_aqi.py - REAL AQI FORECAST (Updated)
 # -------------------------------------------------
 
 import os
 import pickle
-import requests
 import pandas as pd
 from datetime import datetime
 from pymongo import MongoClient
 from dotenv import load_dotenv
+import requests
 
 print("🚀 AQI PREDICTION SCRIPT STARTED")
 
 # -------------------------
-# AQI FORMULA (US EPA)
+# AQI Formula (US EPA)
 # -------------------------
 def pm25_to_aqi(pm25):
     breakpoints = [
@@ -26,9 +26,7 @@ def pm25_to_aqi(pm25):
     ]
     for c_low, c_high, aqi_low, aqi_high in breakpoints:
         if c_low <= pm25 <= c_high:
-            return round(
-                ((aqi_high - aqi_low) / (c_high - c_low)) * (pm25 - c_low) + aqi_low
-            )
+            return round((aqi_high - aqi_low) / (c_high - c_low) * (pm25 - c_low) + aqi_low)
     return None
 
 def aqi_category(aqi):
@@ -44,22 +42,20 @@ def aqi_category(aqi):
 # -------------------------
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
-
 client = MongoClient(MONGO_URI)
 db = client["aqi_database"]
 
-features_col = db["training_features"]    # Historical training data
-model_col = db["model_registry"]          # Stored ML model
-pred_col = db["predictions"]              # AQI forecast
-weather_col = db["weather"]               # Current weather info for dashboard
+features_col = db["training_features"]
+model_col = db["model_registry"]
+pred_col = db["predictions"]
+weather_col = db["weather"]
 
 # -------------------------
 # Load best model
 # -------------------------
-model_doc = model_col.find_one()
+model_doc = model_col.find_one({"rank": 1})
 model = pickle.loads(model_doc["model_binary"])
 FEATURES = model_doc["features"]
-
 print(f"🏆 Loaded model: {model_doc['model_name']}")
 
 # -------------------------
@@ -73,11 +69,9 @@ url = (
     f"windspeed_10m,winddirection_10m,precipitation"
     f"&forecast_days=4&timezone=Asia/Karachi"
 )
-
 weather = requests.get(url).json()
-df = pd.DataFrame(weather["hourly"])
-
-df.rename(columns={
+df_weather = pd.DataFrame(weather["hourly"])
+df_weather.rename(columns={
     "temperature_2m": "temperature",
     "relative_humidity_2m": "humidity",
     "pressure_msl": "pressure",
@@ -85,39 +79,48 @@ df.rename(columns={
     "winddirection_10m": "winddirection",
     "precipitation": "precipitation"
 }, inplace=True)
+df_weather["timestamp"] = pd.to_datetime(df_weather["time"])
+df_weather.drop(columns=["time"], inplace=True)
+df_weather["hour"] = df_weather["timestamp"].dt.hour
+df_weather["day"] = df_weather["timestamp"].dt.day
+df_weather["month"] = df_weather["timestamp"].dt.month
+df_weather["day_of_week"] = df_weather["timestamp"].dt.dayofweek
 
-df["timestamp"] = pd.to_datetime(df["time"])
-df.drop(columns=["time"], inplace=True)
+# -------------------------
+# Fetch latest pollutant data from training_features
+# -------------------------
+latest_pollutants = pd.DataFrame(list(features_col.find(
+    {}, 
+    {f: 1 for f in FEATURES if f not in ["hour","day","month","day_of_week"]} | {"timestamp":1},
+    sort=[("timestamp",-1)]
+)))
+latest_pollutants = latest_pollutants.sort_values("timestamp").iloc[-1:]  # last row
 
-# Add features for model
-df["hour"] = df["timestamp"].dt.hour
-df["day"] = df["timestamp"].dt.day
-df["month"] = df["timestamp"].dt.month
-df["day_of_week"] = df["timestamp"].dt.dayofweek
+# Repeat pollutant values for all forecast hours
+for col in latest_pollutants.columns:
+    if col != "timestamp":
+        df_weather[col] = latest_pollutants.iloc[0][col]
 
 # -------------------------
 # Predict PM2.5 → AQI
 # -------------------------
-df["predicted_pm25"] = model.predict(df[FEATURES])
-df["predicted_aqi"] = df["predicted_pm25"].apply(pm25_to_aqi)
-df["aqi_category"] = df["predicted_aqi"].apply(aqi_category)
+df_weather["predicted_pm25"] = model.predict(df_weather[FEATURES])
+df_weather["predicted_aqi"] = df_weather["predicted_pm25"].apply(pm25_to_aqi)
+df_weather["aqi_category"] = df_weather["predicted_aqi"].apply(aqi_category)
 
 # -------------------------
 # Store AQI forecast in MongoDB
 # -------------------------
-pred_col.delete_many({})  # Clear old forecast
-pred_col.insert_many(
-    df[["timestamp", "predicted_pm25", "predicted_aqi", "aqi_category"]].to_dict("records")
-)
+pred_col.delete_many({})
+pred_col.insert_many(df_weather[["timestamp","predicted_pm25","predicted_aqi","aqi_category"]].to_dict("records"))
 
 # -------------------------
 # Store current weather for dashboard
 # -------------------------
-weather_col.delete_many({})  # keep only latest
-current_weather = df.iloc[0]
-
+weather_col.delete_many({})
+current_weather = df_weather.iloc[0]
 weather_col.insert_one({
-    "timestamp": pd.Timestamp(current_weather["timestamp"]).to_pydatetime(),  # ensure datetime
+    "timestamp": pd.Timestamp(current_weather["timestamp"]).to_pydatetime(),
     "temp_c": float(current_weather["temperature"]),
     "humidity": float(current_weather["humidity"]),
     "pressure": float(current_weather["pressure"]),
@@ -126,9 +129,6 @@ weather_col.insert_one({
     "precipitation": float(current_weather["precipitation"])
 })
 
-
 print("📈 AQI FORECAST COMPLETE")
-print("\n🔮 NEXT 4 DAYS AQI (Hourly):")
-print(df[["timestamp", "predicted_aqi", "aqi_category"]].head(24*4))  # show first 24h of each day
-
+print(df_weather[["timestamp","predicted_aqi","aqi_category"]].head(24*4))
 print("🎉 AQI PREDICTION PIPELINE FINISHED SUCCESSFULLY")
