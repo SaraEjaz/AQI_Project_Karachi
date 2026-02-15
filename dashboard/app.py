@@ -126,6 +126,16 @@ category = aqi_label(latest_aqi)
 today = date.today()
 
 # -----------------------------
+# ALERT FOR HAZARDOUS AQI
+# -----------------------------
+if latest_aqi > 300:
+    st.error(f"🚨 Hazardous AQI Alert! Current AQI is {latest_aqi} ({category}) — Stay Indoors and Avoid Outdoor Activities!")
+elif latest_aqi > 200:
+    st.warning(f"⚠️ Very Unhealthy AQI! Current AQI is {latest_aqi} ({category}) — Sensitive groups should avoid outdoor exposure!")
+elif latest_aqi > 150:
+    st.info(f"⚠️ Unhealthy AQI! Current AQI is {latest_aqi} ({category}) — Limit prolonged outdoor exertion.")
+
+# -----------------------------
 # TOP AQI CARDS
 # -----------------------------
 st.markdown("### 📊 AQI Overview")
